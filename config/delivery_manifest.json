@@ -1,0 +1,25 @@
+
+{
+  "batches": [
+    {
+      "batch_id": "batch_01",
+      "expected_records": 100,
+      "file_name": "batch_01.csv"
+    },
+    {
+      "batch_id": "batch_02",
+      "expected_records": 100,
+      "file_name": "batch_02.csv"
+    },
+    {
+      "batch_id": "batch_03",
+      "expected_records": 10000,
+      "file_name": "batch_03.csv"
+    },
+    {
+      "batch_id": "batch_04",
+      "expected_records": 100,
+      "file_name": "batch_04.csv"
+    }
+  ]
+}
