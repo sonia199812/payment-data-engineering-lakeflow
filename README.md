@@ -1,133 +1,302 @@
-# Payment Transaction & Fraud Analytics | End-to-End Azure Databricks Data Engineering Project
-An end-to-end **Azure Databricks Lakehouse** project that ingests payment transactions from Azure Data Lake Storage Gen2, standardizes CSV and nested JSON sources, enforces data quality, removes duplicate transactions, and produces reconciled payment and fraud KPIs using **Lakeflow Spark Declarative Pipelines**.The project focuses on production-oriented data engineering: **incremental ingestion, multi-format onboarding, data-quality quarantine, idempotent reporting, orchestration, freshness monitoring, and volume-spike testing**.
+# Azure Databricks Payment Transaction & Fraud Analytics | End-to-End Data Engineering Project
 
-## 1. Business problem
+An end-to-end **Azure Data Engineering project** built using **Azure Databricks, Azure Data Lake Storage Gen2, Lakeflow Spark Declarative Pipelines, Databricks SQL, Delta Lake, and Medallion Architecture**.
 
-Payment systems may deliver files in different formats and at unpredictable volumes. Late or missing batches, invalid payment amounts, and duplicate transaction IDs can lead to incomplete reporting or overstated financial KPIs. This pipeline preserves raw source data, applies consistent validation rules, and exposes a trusted reporting layer.
+The project implements an incremental payment data pipeline that ingests CSV and nested JSON transactions, validates data quality, isolates invalid records, removes duplicate transaction IDs, and produces reliable payment and fraud analytics.
 
-## 2. Architecture
-<img width="2142" height="1146" alt="architecture" src="https://github.com/user-attachments/assets/50c57818-c1be-4e57-89de-dcaa6ce5cf8f" />
+## 1. Business Problem
+
+Payment processing systems generate transaction data from multiple sources and formats. These datasets may contain missing transaction identifiers, invalid payment amounts, duplicate transactions, and delayed file arrivals.
+
+Without proper data validation and deduplication, these issues can result in inaccurate transaction counts, overstated payment amounts, and unreliable fraud reporting.
+
+**Solution:** Build a Lakehouse pipeline that ingests payment transactions incrementally, preserves raw data, applies quality rules, isolates rejected records, deduplicates valid transactions, and generates reconciled business metrics.
+
+## 2. Project Objectives
+
+- Implement Bronze, Silver, and Gold layers using Medallion Architecture.
+- Ingest CSV and nested JSON files from Azure Data Lake Storage Gen2.
+- Use Databricks Auto Loader for incremental file ingestion.
+- Develop SQL-based transformations using Lakeflow Spark Declarative Pipelines.
+- Identify invalid payment records and retain rejection reasons.
+- Deduplicate valid transactions using transaction IDs.
+- Generate payment and fraud KPIs.
+- Validate record counts and reconcile Gold metrics against Silver.
+- Test ingestion, data quality, duplicate handling, data freshness, and higher-volume batches.
+- Orchestrate pipeline execution using Lakeflow Jobs.
+
+## 3. Project Architecture
+
+<img width="1754" height="897" alt="Payment Analytics End-to-End Flow (2)" src="https://github.com/user-attachments/assets/39c8e24e-0a39-4fbd-8dd6-a3a30df8d18d" />
 
 
-## 3. Technology stack
+**Pipeline:** `pl_payment_lakeflow`
 
-| Area | Technology |
+**Orchestration:** `job_payment_hourly_orchestration`
+
+**Unity Catalog:** `payment_catalog.payment_de`
+
+The Lakeflow pipeline uses triggered serverless execution. New files are processed during pipeline updates rather than through a continuously running stream.
+
+## 4. Technology Stack
+
+| Component | Technology |
 |---|---|
+| Cloud platform | Microsoft Azure |
 | Cloud storage | Azure Data Lake Storage Gen2 |
-| Data platform | Azure Databricks, Unity Catalog, Delta tables |
-| Ingestion | Auto Loader via `STREAM read_files()` |
-| Processing | Lakeflow Spark Declarative Pipelines, Databricks SQL |
-| Data modeling | Bronze / Silver / Gold (medallion architecture) |
+| Data processing | Azure Databricks |
+| Pipeline framework | Lakeflow Spark Declarative Pipelines |
+| Ingestion | Databricks Auto Loader |
+| Programming language | SQL |
+| Data architecture | Medallion Architecture |
+| Storage format | Delta Lake |
+| Governance | Unity Catalog |
 | Orchestration | Lakeflow Jobs |
-| Monitoring | Pipeline run history and Databricks SQL freshness alert |
-| Version control | GitHub feature branch and pull-request workflow |
+| Monitoring | Pipeline run history and SQL freshness checks |
+| Version control | Git and GitHub |
 
-## 4. Dataset and pipeline design
+## 5. Dataset Overview
 
-### Bronze: preserve raw source records
+The project processes payment transaction records from two source formats.
 
-- **`bronze_payments`** ingests CSV files incrementally from the source volume.
-- **`bronze_payments_json`** ingests newline-delimited nested JSON from a separate JSON directory.
-- Ingestion records source filename and ingestion timestamp.
-- The JSON source includes nested `transaction` and `payment_details` objects and a `tags` array. We extract nested struct fields with dot notation; we do **not** explode `tags` because that would multiply payment rows.
-- JSON ingestion is configured with `schemaEvolutionMode => 'rescue'`. This is **not** a claim that an unexpected-column evolution event was tested.
+**CSV transactions** contain payment identifiers, transaction amounts, timestamps, fraud indicators, and other payment attributes.
 
-### Silver: standardize, validate, quarantine, deduplicate
+**Nested JSON transactions** contain structured payment information, including `transaction`, `payment_details`, and `tags` fields.
 
-- **`silver_payments_validated`** maps `transaction.amount`, `transaction.merchant`, and `transaction.category` to the CSV-aligned fields, combines the sources with `UNION ALL`, and converts types with `TRY_CAST`.
-- Quality rules flag missing transaction IDs, invalid or nonpositive amounts, invalid timestamps, and invalid fraud flags.
-- **`silver_payments_rejected`** retains rows with a `rejection_reason` for investigation.
-- **`silver_payments_deduplicated`** retains one valid row per `transaction_id` using `ROW_NUMBER()`. The selection prioritizes latest ingestion timestamp and then deterministic tie-break columns. In a production CDC system, source version/event time would be preferable to ingestion time when available.
+The files are stored in Azure Data Lake Storage Gen2 and accessed through a Unity Catalog external volume.
 
-### Gold: trusted business metrics
+Both formats are standardized into a common Silver-layer transaction model.
 
-**`gold_payment_kpis`** aggregates only `silver_payments_deduplicated`:
+## 6. Pipeline Implementation
+<img width="740" height="233" alt="image" src="https://github.com/user-attachments/assets/2ba61470-efd1-46e6-8be1-9b075925002c" />
 
-- Unique valid transaction count
-- Total payment amount
-- Fraudulent transaction count
-- Fraud rate (%)
+### Bronze Layer — Incremental Ingestion
 
-Gold reads the deduplicated Silver dataset rather than raw or merely validated records, preventing repeated payment IDs from inflating reporting metrics.
+**Streaming tables:**
 
-## 5. Implemented scenarios and evidence
+- `bronze_payments`
+- `bronze_payments_json`
 
-| Scenario | Test / design | Outcome and limitation |
-|---|---|---|
-| 1. Initial ingestion | 100-row CSV batch | Ingested successfully |
-| 2. Incremental ingestion | Second 100-row CSV batch | Ingested without intentionally reloading previous source files |
-| 3. Sudden volume spike | 10,000-row CSV batch after 100-row batches | Pipeline succeeded at 100× prior batch size; no throughput benchmark claimed |
-| 4. Missing hourly data | Run without a new source file; freshness SQL alert | No-new-file update succeeded; alert query tested, but scheduled email delivery not verified |
-| 5. New JSON format and invalid amount | 100 nested JSON records; one nonnumeric amount | JSON Bronze ingested 100 rows; `TRY_CAST` identified the invalid amount; combined Silver rejection counts validated |
-| 6. Duplicate payments / KPIs | Duplicate-ID CSV test | Validated dataset had 10,399 rows and 10,299 distinct IDs; deduplicated Silver had 10,299 rows. The observed 100 duplicate occurrences differed from the planned 50, so source-level reconciliation remains a follow-up |
-| 7. Latency / cost efficiency | Triggered serverless pipeline, incremental ingestion, run-duration review | Architecture and observed durations documented; no controlled cost-savings or performance-improvement benchmark |
+The Bronze layer uses Auto Loader through `STREAM read_files()` to discover and ingest incoming files.
 
-**Additional orchestration test:** Lakeflow Job `job_payment_hourly_orchestration`, task `run_payment_lakeflow`, successfully invoked the pipeline manually.
+CSV and JSON sources have separate ingestion definitions to accommodate their different parsing requirements.
 
-## 6. Validated KPI results
+The ingestion process preserves source records and captures file metadata and ingestion timestamps.
 
-The Gold results matched a direct aggregation of the deduplicated Silver table:
+The JSON ingestion definition includes schema rescue configuration.
 
-| KPI | Reconciled value |
+### Silver Layer — Data Quality and Deduplication
+
+**Materialized views:**
+
+- `silver_payments_validated`
+- `silver_payments_rejected`
+- `silver_payments_deduplicated`
+
+**Validation and standardization**
+
+CSV and JSON records are mapped to a common schema using SQL transformations and `UNION ALL`.
+
+`TRY_CAST()` is used for safe data-type conversion, allowing malformed values to be identified without terminating the entire transformation.
+
+The implemented quality checks identify:
+
+- Missing transaction IDs.
+- Invalid or nonpositive payment amounts.
+- Invalid transaction timestamps.
+- Invalid fraud indicators.
+
+**Rejected records**
+
+Records failing validation are retained in `silver_payments_rejected` with rejection reasons for investigation.
+
+**Deduplication**
+
+Valid transactions are deduplicated by `transaction_id` using `ROW_NUMBER()`.
+
+The selection logic prioritizes the latest ingestion timestamp and uses additional tie-breaking fields.
+
+The resulting dataset contains one valid record per transaction ID.
+
+### Gold Layer — Payment and Fraud Analytics
+
+**Materialized view:** `gold_payment_kpis`
+
+The Gold layer reads `silver_payments_deduplicated` and calculates:
+
+- Total valid unique transactions.
+- Total payment amount.
+- Fraudulent transaction count.
+- Fraud rate percentage.
+
+Using deduplicated Silver data prevents repeated transaction IDs from inflating financial reporting metrics.
+
+## 7. Engineering Scenarios Tested
+
+| Scenario | Implementation and observed result |
+|---|---|
+| 1. Initial ingestion | Processed an initial 100-record CSV batch using Auto Loader. |
+| 2. Incremental ingestion | Processed a second 100-record CSV batch through a subsequent pipeline update. |
+| 3. Sudden volume spike | Successfully processed a 10,000-record CSV batch, 100 times the initial batch size. |
+| 4. Missing incoming file | Executed a pipeline update without a new source file and tested SQL-based ingestion freshness logic. |
+| 5. JSON ingestion and invalid data | Ingested 100 nested JSON records and identified an invalid numeric payment amount through Silver validation. |
+| 6. Duplicate transaction handling | Applied transaction-ID deduplication and validated 10,299 unique, non-null transaction IDs. |
+| 7. Performance and execution efficiency | Used triggered serverless pipeline execution and reviewed pipeline run behavior during ingestion testing. |
+
+The pipeline was also successfully invoked manually through the Lakeflow Job `job_payment_hourly_orchestration`, using task `run_payment_lakeflow`.
+
+## 8. Data Quality Validation
+
+The project includes a dedicated validation notebook:
+
+`validation/payment_data_quality_validation.ipynb`
+
+The notebook covers four core validation areas.
+
+| Validation area | Purpose |
+|---|---|
+| Bronze ingestion | Verify CSV and JSON record counts |
+| Silver data quality | Validate accepted and rejected records |
+| Silver deduplication | Confirm unique, non-null transaction IDs |
+| Gold reconciliation | Verify business KPIs against Silver |
+
+### Record Count Reconciliation
+
+| Processing stage | Record count |
 |---|---:|
-| Unique valid transactions | **10,299** |
+| Bronze CSV | 10,399 |
+| Bronze JSON | 100 |
+| **Total Bronze** | **10,499** |
+| Silver validated | 10,499 |
+| Invalid records | 100 |
+| Valid records | 10,399 |
+| Duplicate occurrences excluded | 100 |
+| **Silver deduplicated** | **10,299** |
+
+**Reconciliation:**
+
+```text
+Total Bronze = CSV Bronze + JSON Bronze
+10,499 = 10,399 + 100
+
+Valid Records = Total Bronze - Rejected Records
+10,399 = 10,499 - 100
+
+Deduplicated Records = Valid Records - Duplicate Occurrences
+10,299 = 10,399 - 100
+
+Reconciliation Difference = 0
+```
+
+### Rejected Record Analysis
+
+| Rejection reason | Records |
+|---|---:|
+| Missing transaction ID | 99 |
+| Invalid payment amount | 1 |
+| **Total rejected** | **100** |
+
+The Silver deduplication validation confirmed:
+
+```text
+Total Rows          : 10,299
+Distinct IDs        : 10,299
+Null Transaction IDs: 0
+```
+
+This confirms that the final Silver output contains no duplicate or null transaction IDs.
+
+## 9. Gold Layer — Validated Business Results
+
+| Business metric | Validated result |
+|---|---:|
+| Total valid transactions | **10,299** |
 | Total payment amount | **706,075.90** |
 | Fraudulent transactions | **48** |
 | Fraud rate | **0.47%** |
 
-**Data-quality results at the time of validation:** 100 rejected rows (99 missing transaction IDs and one invalid amount). The 99 missing-ID records were not fully traced to their original source files.
+The Gold metrics were independently recalculated from `silver_payments_deduplicated`.
 
-## 7. Reliability, latency, and cost decisions
+All four values matched the corresponding results in `gold_payment_kpis`.
 
-- **Incremental file discovery:** Auto Loader tracks ingested files; normal pipeline updates avoid intentionally reprocessing previously ingested files.
-- **Separate source readers:** CSV and JSON have independent parsing configurations and can be onboarded without changing the original CSV Bronze reader.
-- **Triggered serverless execution:** Compute is provisioned for updates rather than kept running as a continuous pipeline. Scheduled runs may still incur cost even with no new files.
-- **Data freshness:** A SQL alert compares the latest Bronze ingestion timestamp with a one-hour threshold. A successful pipeline update with zero new files does not mean upstream delivery was healthy. Alert scheduling and email delivery still require verification.
-- **Reporting correctness:** Gold is derived from deduplicated valid records, with Silver-to-Gold reconciliation.
-- **Performance boundaries:** A 100× batch-size spike completed successfully; no claim is made about automatic scale-out observed, optimized query plans, lower latency, or quantified cost savings.
+**Gold-to-Silver KPI reconciliation: Passed.**
 
-## 8. Repository layout
+## 10. Pipeline Orchestration and Monitoring
+
+### Lakeflow Jobs
+
+The project uses the Lakeflow Job `job_payment_hourly_orchestration` with task `run_payment_lakeflow` to invoke the payment pipeline.
+
+A manual orchestration run completed successfully.
+
+### Ingestion Freshness
+
+A SQL freshness check compares the latest Bronze ingestion timestamp with a one-hour freshness threshold.
+
+This helps distinguish successful pipeline execution from the absence of newly delivered source data.
+
+### Pipeline Execution
+
+The pipeline uses triggered serverless execution and incremental file ingestion.
+
+Pipeline run history was used to review execution behavior during the tested ingestion scenarios.
+
+## 11. Repository Structure
 
 ```text
 payment-data-engineering-lakeflow/
-├── README.md
-├── transformations/
-│   ├── 01_bronze_ingestion.sql
-│   ├── 02_silver_transformations.sql
-│   ├── 03_bronze_json_ingestion.sql
-│   └── 04_gold_payment_kpis.sql
-└── docs/
-    ├── architecture.md
-    └── validation-and-scenarios.md
+|
+├── config/
+|
+├── pl_payment_lakeflow/
+│   └── transformations/
+│       ├── 01_bronze_ingestion.sql
+│       ├── 02_silver_transformations.sql
+│       ├── 03_bronze_json_ingestion.sql
+│       └── 04_gold_payment_kpis.sql
+|
+├── validation/
+│   └── payment_data_quality_validation.ipynb
+|
+├── .gitignore
+└── README.md
 ```
 
-The SQL files above should be committed from the **actual tested Databricks pipeline definitions**, not reconstructed from documentation. No storage keys, tokens, credentials, or personal data should be committed.
+The repository separates pipeline transformations, configuration, and validation logic.
 
-## 9. Execution and validation
+## 12. How to Run the Project
 
-1. Provision access to the source directories through Unity Catalog and verify the external volume path.
-2. Configure the Lakeflow pipeline to include all four SQL source files.
-3. Run a **normal update** to process new files; avoid full refresh unless deliberately rebuilding state.
-4. Validate Bronze counts, Silver rejection reasons and distinct IDs, and Gold-to-Silver aggregates.
-5. Trigger the pipeline using the Lakeflow Job and inspect task and pipeline run histories.
-6. Check alert schedule and notifications before relying on automated freshness detection.
+1. Configure access to the ADLS Gen2 payment source through the Unity Catalog external volume.
+2. Ensure the required catalog and schema are available.
+3. Configure the Lakeflow pipeline with the four SQL transformation files.
+4. Run a triggered pipeline update to ingest available source files.
+5. Verify Bronze streaming tables and Silver materialized views.
+6. Run the validation notebook to check record counts, rejected records, and transaction uniqueness.
+7. Compare Gold KPIs against independent Silver calculations.
+8. Execute the Lakeflow Job to validate orchestration.
 
-Example reconciliation:
+## 13. Project Outcomes
 
-```sql
-SELECT
-    COUNT(*) AS total_transactions,
-    ROUND(SUM(amount), 2) AS total_payment_amount,
-    COUNT_IF(is_fraud = 1) AS fraudulent_transactions,
-    ROUND(100.0 * COUNT_IF(is_fraud = 1) / NULLIF(COUNT(*), 0), 2)
-        AS fraud_rate_percentage
-FROM payment_catalog.payment_de.silver_payments_deduplicated;
-```
+- Built a six-table Medallion Architecture pipeline using Azure Databricks.
+- Implemented incremental CSV and nested JSON ingestion using Auto Loader.
+- Standardized multiple source formats through SQL transformations.
+- Implemented data-quality checks and rejection handling.
+- Deduplicated valid transactions by transaction ID.
+- Processed a 10,000-record batch following smaller ingestion batches.
+- Validated 10,499 ingested records across CSV and JSON sources.
+- Produced 10,299 unique valid transactions.
+- Reconciled payment and fraud metrics between Silver and Gold.
+- Executed the pipeline through Lakeflow Jobs.
+- Organized transformation and validation code under Git version control.
 
-## 10. Engineering trade-offs and future work
+## 14. Key Engineering Learnings
 
-- **Schema rescue vs schema evolution:** Rescue mode is configured; adding an unexpected JSON column in a later batch and verifying rescued data is a future test.
-- **Duplicate semantics:** Ingestion timestamp is a practical tie-breaker for this demonstration; production payment corrections may require event versioning, CDC, and an explicit conflict-resolution policy.
-- **Monitoring:** Verify hourly alert scheduling, email delivery, and escalation. A freshness alert detects stale ingested data but does not automatically diagnose the upstream cause.
-- **Scale:** Investigate query profiles, shuffle/skew, incremental MV refresh behavior, and billable usage before making optimization claims.
-- **Dashboards:** A BI dashboard is optional; the current deliverable is the validated Gold reporting dataset.
+This project demonstrates practical implementation of incremental file ingestion, streaming tables, materialized views, multi-format data processing, data-quality validation, duplicate handling, Lakeflow orchestration, and business-metric reconciliation.
+
+The pipeline preserves raw records for traceability, isolates invalid transactions before reporting, and calculates business metrics from a deduplicated Silver dataset.
+
+The resulting Lakehouse provides a validated foundation for payment transaction and fraud analytics.
+
+---
+
+**GitHub Repository:** [payment-data-engineering-lakeflow](https://github.com/sonia199812/payment-data-engineering-lakeflow)
